@@ -17,14 +17,6 @@ logger = get_logger("api", "DiscordEchoSaver")
 _bot: DiscordEchoSaverBot | None = None
 
 
-class _APIBot(DiscordEchoSaverBot):
-    """Variante del bot que no ejecuta tareas automáticamente en on_ready.
-    Permanece conectado y espera solicitudes HTTP."""
-
-    async def on_ready(self):
-        logger.info(f"Bot conectado como {self.user} — esperando solicitudes HTTP")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _bot
@@ -35,10 +27,20 @@ async def lifespan(app: FastAPI):
     intents.members = True
     intents.messages = True
 
+    # asyncio.Event propio para saber cuándo el bot está listo.
+    # wait_until_ready() de discord.py falla si se llama antes de que login()
+    # haya inicializado _connection, lo cual ocurre cuando se usa create_task.
+    ready_event = asyncio.Event()
+
+    class _APIBot(DiscordEchoSaverBot):
+        async def on_ready(self):
+            logger.info(f"Bot conectado como {self.user} — esperando solicitudes HTTP")
+            ready_event.set()
+
     _bot = _APIBot(intents=intents, guild_id_list=[], channel_id_list=[])
     bot_task = asyncio.create_task(_bot.start(settings.DISCORD_BOT_TOKEN))
 
-    await _bot.wait_until_ready()
+    await ready_event.wait()
     logger.info("API lista y bot conectado")
 
     yield

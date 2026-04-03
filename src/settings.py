@@ -13,7 +13,12 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_NAME = os.getenv("DB_NAME")
 
-APP_CONN_STRING = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+db_port_dockerizado= 5432 
+# si el proyecto está dockerizado, entonces en APP_CONN_STRING el puerto debe ser el 5432 que es el por defecto de postgres dockerizado, 
+# sino, debe ser el puerto DB_PORT que es donde escucha el postgres dockerizado
+
+
+APP_CONN_STRING = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{db_port_dockerizado}/{DB_NAME}"
 
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN") # token con permisos maximos

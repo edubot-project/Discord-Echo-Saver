@@ -1,4 +1,17 @@
 services:
+  discord-echo-saver:
+    build:
+      context: .
+      dockerfile: DiscordEchoSaver.dockerfile
+    container_name: discord-echo-saver
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres-db:
     #image: postgres:15
     image: pgvector/pgvector:pg16

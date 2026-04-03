@@ -3,7 +3,7 @@ import requests
 BASE_URL = "http://localhost:8000"
 
 GUILD_ID_LIST = [772855809406271508, 1308885706621452369]
-CHANNEL_ID_LIST = [1311706520467144808]
+CHANNEL_ID_LIST = [1309953119366676510]
 
 
 def test_update_channels():
@@ -31,11 +31,13 @@ def test_update_messages():
 
 
 if __name__ == "__main__":
-    test_update_channels()
-    test_update_users()
+    #test_update_channels()
+    #test_update_users()
     test_update_messages()
 
 
 """
 python3 test/api/main.py
+
+
 """

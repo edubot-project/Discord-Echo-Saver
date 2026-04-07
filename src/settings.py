@@ -18,7 +18,7 @@ db_port_dockerizado= 5432
 # sino, debe ser el puerto DB_PORT que es donde escucha el postgres dockerizado
 
 
-APP_CONN_STRING = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{db_port_dockerizado}/{DB_NAME}"
+APP_CONN_STRING = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN") # token con permisos maximos
@@ -26,7 +26,7 @@ DULCINEA_DISCORD_BOT_TOKEN = os.getenv("DULCINEA_DISCORD_BOT_TOKEN")
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
+SERVER_AI_TEAM = os.getenv("SERVER_AI_TEAM")
 
 
 

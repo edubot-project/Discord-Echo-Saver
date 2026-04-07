@@ -80,6 +80,10 @@ class DiscordMessage(Base):
 
 
 # CREATE EXTENSION IF NOT EXISTS vector;
+
+#ALTER TABLE channel_chronological_summary 
+#ADD COLUMN last_message_id BIGINT REFERENCES discord_messages(id);
+
 class DiscordChannelChronologicalSummary(Base):
     __tablename__="channel_chronological_summary"
     
@@ -88,6 +92,7 @@ class DiscordChannelChronologicalSummary(Base):
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     number_messages = Column(Integer)
+    #last_message_id = Column(BigInteger, ForeignKey("discord_messages.id"))
     summary = Column(Text, nullable=True)
     summary_embedding = Column(Vector[3072])
     #rag_summary = Column(Text)

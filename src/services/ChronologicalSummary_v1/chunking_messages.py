@@ -4,10 +4,58 @@ from sqlalchemy.engine import Engine
 import pandas as pd
 from src import models
 from datetime import datetime
+from typing import List
+
+# TODO: AL PARECER HAY UN ERROR EN LA CHUNKENIZACION DE LOS CANALES CON ID 1366127509774532638, 1370774052112826419, 1313134634904846396, 1313504722459820122 !!!!!!
+
+
+def merge_summary_chunks(session: Session, ids: List[int]):
+    # Obtener los registros a fusionar
+    db_records = session.query(models.DiscordChannelChronologicalSummary).filter(
+        models.DiscordChannelChronologicalSummary.id.in_(ids)  # Nota: usa .in_() en lugar de "in"
+    ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
+    
+    if not db_records:
+        return None
+    
+    start = db_records[0].start_time
+    end = db_records[-1].end_time
+    
+    # Opcional: Aquí puedes combinar otros campos como 'content' si es necesario
+    # Por ejemplo: combined_content = " ".join([record.content for record in db_records])
+    
+    # Eliminar los registros existentes
+    for record in db_records:
+        session.delete(record)
+    
+    # Crear el nuevo registro
+    new_record = models.DiscordChannelChronologicalSummary(
+        start_time=start,
+        end_time=end,
+        # Asegúrate de incluir otros campos obligatorios aquí
+        # Por ejemplo: channel_id=db_records[0].channel_id,
+        # content=combined_content, etc.
+    )
+    
+    session.add(new_record)
+    # session.flush()  # Opcional: para obtener el ID del nuevo registro
+    
+    # El commit se debe hacer fuera de la función o puedes agregar:
+    # session.commit()
+    
+    return new_record
+
 
 
 
 def chunking_messages_by_channel(engine: Engine, session: Session, channel_id: int, min_msg: int = 50):
+
+    channel = session.query(models.DiscordChannel).filter_by(id=channel_id).first()
+    if channel.channel_type in {"forum", "category"}:
+        print(f"El canal {channel.name} es un foro o una categoría. Se ignorara este canal para la chunkenizacion")
+        return 
+    
+
 
     record = session.query(models.DiscordChannelChronologicalSummary).filter(
         models.DiscordChannelChronologicalSummary.channel_id == channel_id
@@ -19,7 +67,7 @@ def chunking_messages_by_channel(engine: Engine, session: Session, channel_id: i
         print("Se porcederá con la chunkenizacion del canal")
         last_saved_message = None
     else:
-        print(f"Se ha encontrado registros del canal {channel_id}. Se intentará chunkenizar nuecos mensajes de este mismo canal")
+        print(f"Se ha encontrado registros del canal {channel_id}. Se intentará chunkenizar nuevos mensajes de este mismo canal")
         last_saved_message = record.start_time
         pass
 
@@ -122,6 +170,22 @@ def chunking_messages_by_channel(engine: Engine, session: Session, channel_id: i
 
 
 
+def chunking_recursively_by_channel_id(engine: Engine, session: Session, channel_id: int, min_msg: int = 50):
+    print(f"chunkenizadodo recursivamente el canal {channel_id}")
+    chunking_messages_by_channel(engine=engine, session=session, channel_id=channel_id, min_msg=min_msg)
+
+    channels_records = session.query(models.DiscordChannel).filter_by(parent_channel_id=channel_id).all()
+    print(f"hay {len(channels_records)} en channels_records")
+    if channels_records is None:
+        print(f"El canal con id {channel_id} no tiene hijos")
+        return
+    
+    for obj in channels_records:
+        chunking_recursively_by_channel_id(engine=engine, session=session, channel_id=obj.id, min_msg=min_msg)
+        print("\n\n")
+    
+
+
 if __name__=="__main__":
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -135,7 +199,7 @@ if __name__=="__main__":
 
     # chunking_messages_by_channel(engine=engine, session=session, channel_id=1478852628019675237)
 
-
+    chunking_recursively_by_channel_id(engine=engine, session=session, channel_id=1309953285582491649)
 
 
 

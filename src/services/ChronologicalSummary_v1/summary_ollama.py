@@ -84,6 +84,10 @@ def get_messages(session: Session, channel_id: int, summary_from: datetime, summ
     return "".join(final_transcript)
 
 
+
+
+
+
 async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, semaphore : asyncio.Semaphore):
     print("\n")
     print("****** precess_single_chunk")
@@ -98,123 +102,84 @@ async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, sem
 
 
 
-async def asummary_all_chunks(session : Session, semaphore : asyncio.Semaphore, llm : BaseChatModel):
-
-    print(">>> entrando a main_1")
-    input_tokens = 0
-    output_tokens = 0
-
-    chronological_summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(models.DiscordChannelChronologicalSummary.summary.is_(None)).all()
-    print(f">>> registros encontrados: {len(chronological_summary_records)}")
-    if len(chronological_summary_records) == 0:
-        print(">>> NO HAY NADA PARA PROCESAR")
-        return
-    
-    prompts = []
-    for obj in chronological_summary_records:
-        messages = get_messages(session=session, channel_id=obj.channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
-        print("\n"*4)
-        prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
-        prompts.append({'prompt':prompt, 'idx':obj.id})
-    
-    tasks = [process_single_chunk(llm=llm, prompt=p['prompt'], idx=p['idx'], semaphore=semaphore) for p in prompts]
-    results = await asyncio.gather(*tasks)
-
-    for r in results:
-        if r:
-            db_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=r["idx"]).first()
-            db_record.summary = r["summary"]
-            input_tokens += r["usage_metadata"].get("input_tokens", 0)
-            output_tokens += r["usage_metadata"].get("output_tokens", 0)
-            session.add(db_record)
-    
-    session.commit()
-    session.close()
-    print("\n\n")
-    print(f"input_tokens: {input_tokens} | output_tokens: {output_tokens}")
 
 
+async def collect_all_pending_summaries(session: Session, channel_id: int):
+    """
+    Recorre la jerarquía y devuelve una lista plana de todos los prompts pendientes.
+    Esto evita procesar canal por canal y permite paralelismo real.
+    """
+    all_tasks = []
 
-
-async def summmary_by_channel_id(session : Session, semaphore : asyncio.Semaphore, llm : BaseChatModel, idx : int):
-    print(f"======== summmary_by_channel_id --- procesando el canal con id {idx}")
-    input_tokens = 0
-    output_tokens = 0
-
-    channel_record = session.query(models.DiscordChannel).filter_by(id=idx).first() 
-    if channel_record is None:
-        print(f"No existe canal con este id: {idx}")
-        return None
-    
-    if channel_record.channel_type in {"forum", "thread"}:
-        print("El tipo de canal es foro o categoria. Saltandolo, no contienen mensajes")
-        return None
-    
-    print("El canal es de tipo texto o hilo consiguiendo los resumenes")
+    # 1. Obtener registros pendientes del canal actual
     summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(
-        models.DiscordChannelChronologicalSummary.channel_id == idx,
+        models.DiscordChannelChronologicalSummary.channel_id == channel_id,
         models.DiscordChannelChronologicalSummary.summary.is_(None),
     ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
-    if summary_records is None:
-        print(f"No hay resumens pendientes en el canal {idx}")
-    
-    datos = []
+
     for obj in summary_records:
-        messages = get_messages(session, channel_id=idx, summary_from=obj.start_time, summary_end=obj.end_time)
-        print(f"mensajes conseguidos del canal desde {obj.start_time.strftime('%d/%m/%Y %H:%M')} hasta {obj.end_time.strftime('%d/%m/%Y %H:%M')}")
-        prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
-        datos.append({"prompt":prompt, "idx":obj.id})
+        messages = get_messages(session, channel_id=channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
+        if messages:
+            prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
+            all_tasks.append({"prompt": prompt, "idx": obj.id})
     
-    tasks = [
-        process_single_chunk(llm=llm, prompt=d["prompt"], idx=d["idx"], semaphore=semaphore)
-        for d in datos
-    ]
-
-    result = await asyncio.gather(*tasks)
-
-    for r in result:
-        if r:
-            db_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=r['idx']).first()
-            db_record.summary = r["summary"]
-            input_tokens += r["usage_metadata"].get("input_tokens", 0)
-            output_tokens += r["usage_metadata"].get("output_tokens", 0)
-            session.add(db_record)
-    
-    session.commit()
-    print(f"input_tokens: {input_tokens} | output_tokens: {output_tokens}")
-
-
-
-
-
-async def summarize_recursively_by_channel_id(session : Session, semaphore : asyncio.Semaphore, llm : BaseChatModel, idx : int):
-
-    await summmary_by_channel_id(session=session, semaphore=semaphore, llm=llm, idx=idx)
-
-    channel_records = session.query(models.DiscordChannel).filter(
-        models.DiscordChannel.parent_channel_id == idx
+    # 2. Buscar canales hijos (recursividad para recolectar, no para procesar)
+    child_channels = session.query(models.DiscordChannel).filter(
+        models.DiscordChannel.parent_channel_id == channel_id
     ).all()
 
+    for child in child_channels:
+        # Llamada recursiva para seguir recolectando
+        child_tasks = await collect_all_pending_summaries(session, child.id)
+        all_tasks.extend(child_tasks)
 
-    for obj in channel_records:
-        await summarize_recursively_by_channel_id(session=session, semaphore=semaphore, llm=llm, idx=obj.id)
-        print("\n"*5)
+    return all_tasks
+
+async def process_parallel_system(session: Session, semaphore: asyncio.Semaphore, llm: BaseChatModel, root_idx: int):
+    """
+    Orquestador principal que recolecta todo y lo lanza a las GPUs.
+    """
+    print(f"--- 🔍 Recolectando tareas pendientes desde el ID {root_idx}...")
+    
+    # Recolectamos TODO primero
+    pending_tasks_data = await collect_all_pending_summaries(session, root_idx)
+    
+    if not pending_tasks_data:
+        print("--- ✅ No hay resúmenes pendientes.")
+        return
+
+    print(f"--- 🚀 Lanzando {len(pending_tasks_data)} tareas a las GPUs...")
+
+    # Creamos las corrutinas
+    tasks = [
+        process_single_chunk(llm=llm, prompt=t["prompt"], idx=t["idx"], semaphore=semaphore)
+        for t in pending_tasks_data
+    ]
+
+    # Aquí ocurre la magia: asyncio.gather lanzará tantas como el semáforo permita
+    results = await asyncio.gather(*tasks)
+
+    # Guardado de resultados
+    print("--- 💾 Guardando resultados en DB...")
+    input_tokens, output_tokens = 0, 0
+    
+    for r in results:
+        if r:
+            db_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=r['idx']).first()
+            if db_record:
+                db_record.summary = r["summary"]
+                input_tokens += r["usage_metadata"].get("input_tokens", 0)
+                output_tokens += r["usage_metadata"].get("output_tokens", 0)
+                session.add(db_record)
+    
+    session.commit()
+    print(f"--- ✨ Finalizado | Tokens In: {input_tokens} | Tokens Out: {output_tokens}")
 
 
 
 
 
-def redo_summary(session : Session, llm : BaseChatModel, summary_id : int):
-    summary_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=summary_id).first()
-    pass
-
-
-
-
-
-
-
-
+# --- En tu bloque __main__ ---
 if __name__=="__main__":
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -231,38 +196,22 @@ if __name__=="__main__":
     session = MySession()
 
     semaphore = asyncio.Semaphore(2)
+    # ... (tu setup anterior)
 
-
-
-    start = datetime.strptime('2025-03-31 00:00:00', '%Y-%m-%d %H:%M:%S')
-    end = datetime.strptime('2025-05-11 23:59:59', '%Y-%m-%d %H:%M:%S')
-
-    
-    # messages = get_messages(session=session, channel_id=1357437165738393822, summary_from=start, summary_end=end)
-    # print(messages)
-
-    semaphore = asyncio.Semaphore(2)
-    # model = "gemini-2.0-flash"
-    # llm = ChatGoogleGenerativeAI(model=model, temperature=0.5, google_api_key=settings.GOOGLE_API_KEY)
-    
-    model = "gpt-oss:20b"
+    #model = "gpt-oss:20b"
+    model = "qwen3:30b"
     llm = ChatOllama(model=model, temperature=0.3, base_url=settings.SERVER_AI_TEAM)
 
-    # asyncio.run(
-    #     asummary_all_chunks(session=session, semaphore=semaphore, llm=llm)
-    # )
+
+    # CONFIGURACIÓN CLAVE:
+    # Como en Ollama pusiste NUM_PARALLEL=4, aquí el semáforo debe ser 4.
+    # Si quieres que Python siempre tenga una petición "en cola" lista para entrar
+    # cuando una GPU se libere, podrías probar con 5 o 6.
+    semaphore = asyncio.Semaphore(4) 
+    
 
     asyncio.run(
-        summarize_recursively_by_channel_id(session=session, semaphore=semaphore, llm=llm, idx=1309953285582491649)
+        process_parallel_system(session=session, semaphore=semaphore, llm=llm, root_idx=1309953285582491649)
     )
 
-
-
-
-
-
-"""
-python3 -m src.services.ChronologicalSummary_v1.summary
-
-
-"""
+    

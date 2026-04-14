@@ -225,12 +225,13 @@ if __name__=="__main__":
 
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_ollama import ChatOllama
+    from langchain_groq import ChatGroq
 
     engine = create_engine(settings.APP_CONN_STRING)
     MySession = sessionmaker(bind=engine)
     session = MySession()
 
-    semaphore = asyncio.Semaphore(2)
+    semaphore = asyncio.Semaphore(5)
 
 
 
@@ -245,8 +246,11 @@ if __name__=="__main__":
     # model = "gemini-2.0-flash"
     # llm = ChatGoogleGenerativeAI(model=model, temperature=0.5, google_api_key=settings.GOOGLE_API_KEY)
     
-    model = "gpt-oss:20b"
-    llm = ChatOllama(model=model, temperature=0.3, base_url=settings.SERVER_AI_TEAM)
+    # model = "gpt-oss:20b"
+    # llm = ChatOllama(model=model, temperature=0.3, base_url=settings.SERVER_AI_TEAM)
+
+    model="openai/gpt-oss-120b"
+    llm = ChatGroq(model=model, temperature=0.2, api_key=settings.GROQ_API_KEY)
 
     # asyncio.run(
     #     asummary_all_chunks(session=session, semaphore=semaphore, llm=llm)

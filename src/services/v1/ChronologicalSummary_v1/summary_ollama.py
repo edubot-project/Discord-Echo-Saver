@@ -215,3 +215,8 @@ if __name__=="__main__":
     )
 
     
+"""
+python3 -m src.services.ChronologicalSummary_v1.summary_ollama
+
+
+"""

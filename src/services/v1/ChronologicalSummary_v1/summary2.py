@@ -1,0 +1,240 @@
+import asyncio
+from sqlalchemy.orm import Session
+from src import models
+from datetime import datetime
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from src.services.ChronologicalSummary_v1.prompts import SUMMARY_DISCORD_MESSAGES_1
+
+
+import re
+from sqlalchemy.orm import Session
+from src import models
+from datetime import datetime
+
+from src.logging_config import get_logger
+logger = get_logger(module_name="summaery", DIR="ChronologicalSummary_v1")
+
+
+def get_messages(session: Session, channel_id: int, summary_from: datetime, summary_end: datetime):
+    # 1. Recuperar todos los mensajes del rango de una sola vez
+    message_content_records = session.query(models.DiscordMessage).filter(
+        models.DiscordMessage.channel_id == channel_id,
+        models.DiscordMessage.message_create_at >= summary_from,
+        models.DiscordMessage.message_create_at <= summary_end
+    ).order_by(models.DiscordMessage.message_create_at.asc()).all()
+
+    if not message_content_records:
+        return ""
+
+    # 2. Crear un mapa de UserID -> Name y MessageID -> MessageRecord
+    # Esto evita consultas repetitivas a la base de datos (N+1)
+    user_map = {str(msg.user_id): msg.user_name for msg in message_content_records}
+    msg_map = {msg.id: msg for msg in message_content_records}
+
+    # 3. Función para reemplazar menciones <@ID> por @Nombre
+    def replace_mentions(text, mapping):
+        if not text: return ""
+        # Busca el patrón <@números>
+        return re.sub(r'<@!?(\d+)>', lambda m: f"@{mapping.get(m.group(1), 'usuario_desconocido')}", text)
+
+    # Plantillas optimizadas
+    TEMPLATE_1 = "User: {user_name}  | Date: {date}\nContent: {content}\n\n" # (ID: {user_id})
+    TEMPLATE_2 = "User: {user_name}  | Date: {date} | Reply to: {reply_to_name}\nContent: {content}\n\n" # (ID: {user_id})
+
+    final_transcript = []
+
+    for obj in message_content_records:
+        try:
+            # Limpiar el contenido reemplazando IDs por nombres
+            clean_content = replace_mentions(obj.content, user_map)
+            date_str = obj.message_create_at.strftime("%d/%m/%Y %H:%M")
+            
+            # Lógica de respuesta
+            if obj.reply_to:
+                # Intentamos buscar el nombre en nuestro mapa local primero
+                parent_msg = msg_map.get(obj.reply_to)
+                if parent_msg:
+                    reply_name = parent_msg.user_name
+                else:
+                    # Si la respuesta es a un mensaje fuera de este rango de tiempo,
+                    # podrías hacer una consulta rápida o poner "mensaje previo"
+                    reply_name = "usuario_en_hilo_anterior"
+                
+                msg_text = TEMPLATE_2.format(
+                    user_name=obj.user_name,
+                    #user_id=obj.user_id,
+                    date=date_str,
+                    reply_to_name=reply_name,
+                    content=clean_content
+                )
+            else:
+                msg_text = TEMPLATE_1.format(
+                    user_name=obj.user_name,
+                    #user_id=obj.user_id,
+                    date=date_str,
+                    content=clean_content
+                )
+            
+            final_transcript.append(msg_text)
+
+        except Exception as e:
+            print(f"Error procesando mensaje {obj.id}: {e}")
+        
+    return "".join(final_transcript)
+
+
+
+
+
+
+async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, semaphore : asyncio.Semaphore):
+    print("\n")
+    print("****** precess_single_chunk")
+    async with semaphore:
+        try:
+            ai_message = await llm.ainvoke(prompt)
+            print(f"usage_metadata: {ai_message.usage_metadata}, \n\n numero de caracteres: {len(ai_message.content)} \n\n\n")
+            return {"summary": ai_message.content, "usage_metadata":ai_message.usage_metadata, "idx":idx}
+        except Exception as e:
+            logger.info(f"error procesando en el registro {idx} de DiscordChannelChronologicalSummary: \n {e} \n\n")
+            return None
+
+
+
+
+
+async def collect_all_pending_summaries(session: Session, channel_id: int):
+    """
+    Recorre la jerarquía y devuelve una lista plana de todos los prompts pendientes.
+    Esto evita procesar canal por canal y permite paralelismo real.
+    """
+    all_tasks = []
+
+    # 1. Obtener registros pendientes del canal actual
+    summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(
+        models.DiscordChannelChronologicalSummary.channel_id == channel_id,
+        models.DiscordChannelChronologicalSummary.summary.is_(None),
+    ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
+
+    for obj in summary_records:
+        messages = get_messages(session, channel_id=channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
+        if messages:
+            prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
+            all_tasks.append({"prompt": prompt, "idx": obj.id})
+    
+    # 2. Buscar canales hijos (recursividad para recolectar, no para procesar)
+    child_channels = session.query(models.DiscordChannel).filter(
+        models.DiscordChannel.parent_channel_id == channel_id
+    ).all()
+
+    for child in child_channels:
+        # Llamada recursiva para seguir recolectando
+        child_tasks = await collect_all_pending_summaries(session, child.id)
+        all_tasks.extend(child_tasks)
+
+    return all_tasks
+
+
+
+
+
+
+
+async def process_parallel_system(session: Session, semaphore: asyncio.Semaphore, llm: BaseChatModel, root_idx: int):
+    print(f"--- 🔍 Recolectando tareas desde el ID {root_idx}...")
+    pending_tasks_data = await collect_all_pending_summaries(session, root_idx)
+    
+    if not pending_tasks_data:
+        print("--- ✅ Nada pendiente.")
+        return
+
+    total_tasks = len(pending_tasks_data)
+
+    # Creamos las corrutinas pero NO las lanzamos con gather
+    tasks = [
+        process_single_chunk(
+            llm=llm, 
+            prompt=t["prompt"], 
+            idx=t["idx"], 
+            semaphore=semaphore
+        )
+        for i, t in enumerate(pending_tasks_data)
+    ]
+
+    count = 0
+    input_tokens, output_tokens = 0, 0
+
+    # Usamos as_completed para obtener resultados conforme vayan terminando
+    for task in asyncio.as_completed(tasks):
+        result = await task
+        
+        if result and result["summary"]:
+            # Guardado inmediato de este registro
+            db_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=result["idx"]).first()
+            if db_record:
+                db_record.summary = result["summary"]
+                
+                # Acumular tokens para el log final
+                meta = result.get("usage_metadata")
+                if meta:
+                    input_tokens += meta.get("input_tokens", 0)
+                    output_tokens += meta.get("output_tokens", 0)
+
+                # Commit cada 1 o cada pocos registros para no saturar la DB pero estar seguros
+                session.add(db_record)
+                session.commit() # <--- GUARDADO REAL AQUÍ
+                
+                count += 1
+                print(f"--- [Progreso: {count}/{total_tasks}] Registro {result['idx']} guardado correctamente.")
+
+    print(f"\n--- ✨ ¡PROCESO FINALIZADO!")
+    print(f"--- 📊 Resúmenes guardados: {count}")
+    print(f"--- 📊 Tokens totales: In: {input_tokens} | Out: {output_tokens}")
+
+
+
+
+
+async def asummarize_all_pending(session : Session, semaphore : asyncio.Semaphore, llm : BaseChatModel, id : int):
+    pass
+
+
+
+
+
+
+
+if __name__=="__main__":
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from src import settings
+    from src import models
+    from datetime import datetime
+    import asyncio 
+
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_ollama import ChatOllama
+    from langchain_groq import ChatGroq
+
+    engine = create_engine(settings.APP_CONN_STRING)
+    MySession = sessionmaker(bind=engine)
+    session = MySession()
+
+    model="openai/gpt-oss-120b"
+    llm = ChatGroq(model=model, temperature=0.2, api_key=settings.GROQ_API_KEY)
+
+
+    
+    semaphore = asyncio.Semaphore(3) 
+
+    asyncio.run(
+        process_parallel_system(session=session, semaphore=semaphore, llm=llm, root_idx=1309953285582491649)
+    )
+
+    
+"""
+python3 -m src.services.ChronologicalSummary_v1.summary2
+
+
+"""

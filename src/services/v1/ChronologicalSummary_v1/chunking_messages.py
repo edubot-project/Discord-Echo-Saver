@@ -6,7 +6,6 @@ from src import models
 from datetime import datetime
 from typing import List
 
-# TODO: AL PARECER HAY UN ERROR EN LA CHUNKENIZACION DE LOS CANALES CON ID 1366127509774532638, 1370774052112826419, 1313134634904846396, 1313504722459820122 !!!!!!
 
 
 def merge_summary_chunks(session: Session, ids: List[int]):
@@ -135,7 +134,7 @@ def chunking_messages_by_channel(engine: Engine, session: Session, channel_id: i
         models.DiscordMessage.channel_id == channel_id,
         models.DiscordMessage.message_create_at >= first_dict['summary_from'],
         models.DiscordMessage.message_create_at <= first_dict['summary_end']
-    ).order_by(models.DiscordMessage.channel_id).first()
+    ).order_by(models.DiscordMessage.message_create_at).first()
 
 
     last_dict = summary_list[-1]
@@ -175,7 +174,7 @@ def chunking_recursively_by_channel_id(engine: Engine, session: Session, channel
     chunking_messages_by_channel(engine=engine, session=session, channel_id=channel_id, min_msg=min_msg)
 
     channels_records = session.query(models.DiscordChannel).filter_by(parent_channel_id=channel_id).all()
-    print(f"hay {len(channels_records)} en channels_records")
+    print(f"hay {len(channels_records)} en channels_records") # TODO: Esto quiere decir la cantidad de hijosdel canal
     if channels_records is None:
         print(f"El canal con id {channel_id} no tiene hijos")
         return

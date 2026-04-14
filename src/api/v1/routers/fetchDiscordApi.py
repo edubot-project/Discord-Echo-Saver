@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src import settings
 from src.logging_config import setup_base_logging, get_logger
-from src.services.DiscordEchoSaver_v1.echosaverbot_v2 import DiscordEchoSaverBot
+from src.services.v1.DiscordEchoSaver_v1.echosaverbot_v2 import DiscordEchoSaverBot
 
 from fastapi import APIRouter, HTTPException
 

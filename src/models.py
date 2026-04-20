@@ -55,6 +55,7 @@ class DiscordChannel(Base):
     create_at = Column(DateTime, index=True)
     last_messages_at = Column(DateTime, index=True)  # Fecha del ultimo mensaje
     inserted_at = Column(DateTime, server_default=func.now())
+    # summary = Column(Text, nullable=True)
 
 
 
@@ -100,5 +101,15 @@ class DiscordChannelChronologicalSummary(Base):
 
 
 
+
+
+# class DiscordChannelSummary(Base):
+#     __tablename__ = "discord_channel_summaries"
+
+#     id = Column(Integer, primary_key=True, autoincrement=True)
+#     channel_id = Column(BigInteger, ForeignKey("discord_channels.id"))
+#     summary = Column(Text, nullable=True)
+#     summary_embedding = Column(Vector[3072])
+#     cronological_summary_lenght = Column(Integer)
 
 

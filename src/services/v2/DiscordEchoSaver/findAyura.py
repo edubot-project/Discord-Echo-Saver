@@ -30,9 +30,9 @@ class DiscordEchoSaverBot(discord.Client):
         session = SessionLocal()
         try:
             await self.update_channels(session)
-            await self.update_users(session)
-            for channel_id in self.channel_id_list:
-                await self.recursively_save_messages_from_a_root(session, channel_id)
+            # await self.update_users(session)
+            # for channel_id in self.channel_id_list:
+            #     await self.recursively_save_messages_from_a_root(session, channel_id)
         finally:
             session.close()
         await self.close()
@@ -198,126 +198,7 @@ class DiscordEchoSaverBot(discord.Client):
             session.commit()
             logger.info(f"{guild.name}: {new_count} usuarios nuevos, {updated_count} actualizados.")
 
-    # -------------------------------------------------------------------------
-    # MESSAGES
-    # -------------------------------------------------------------------------
 
-    async def recursively_save_messages_from_a_root(self, session: Session, root_id: int):
-        """
-        Extrae y guarda mensajes de un canal/hilo y de todos sus hijos en la BD,
-        de forma recursiva. Usa last_messages_at para actualizaciones incrementales.
-        """
-        logger.info(f"Procesando nodo: {root_id}")
-
-        channel_record = session.query(models.DiscordChannel).filter_by(id=root_id).first()
-        if not channel_record:
-            logger.warning(f"Canal {root_id} no existe en la base de datos, saltando.")
-            return
-
-        root = self.get_channel(root_id)
-        if root is None:
-            try:
-                logger.debug(f"Canal {root_id} no estaba en caché, buscando en la API...")
-                root = await self.fetch_channel(root_id)
-            except discord.NotFound:
-                logger.error(f"Canal {root_id} no encontrado en Discord.")
-                return
-            except discord.Forbidden:
-                logger.error(f"Sin permisos para acceder al canal {root_id}.")
-                return
-            except Exception as e:
-                logger.error(f"Error inesperado al obtener canal {root_id}: {e}")
-                return
-
-        logger.debug(f"Tipo: {channel_record.channel_type} | Nombre: {channel_record.name}")
-
-        if channel_record.channel_type in ("text", "thread"):
-            await self._fetch_and_save_messages(session, root, channel_record)
-
-        children = (
-            session.query(models.DiscordChannel)
-            .filter_by(parent_channel_id=root_id)
-            .all()
-        )
-        logger.info("\n"*5)
-        if children:
-            logger.debug(f"Procesando {len(children)} hijos de '{channel_record.name}'")
-            for child in children:
-                await self.recursively_save_messages_from_a_root(session, child.id)
-
-    async def _fetch_and_save_messages(
-        self,
-        session: Session,
-        channel: discord.TextChannel,
-        channel_record: models.DiscordChannel,
-    ):
-        count = 0
-        latest_timestamp = None
-        after = None
-
-        if channel_record.last_messages_at is not None:
-            last_msg = (
-                session.query(models.DiscordMessage)
-                .filter_by(channel_id=channel.id)
-                .order_by(models.DiscordMessage.message_create_at.desc())
-                .first()
-            )
-            if last_msg:
-                after = last_msg.message_create_at
-                logger.info(f"'{channel.name}': continuando desde {after}")
-            else:
-                logger.warning(f"'{channel.name}': last_messages_at existe pero no hay mensajes en BD.")
-        else:
-            logger.info(f"'{channel.name}': primera extracción completa.")
-
-        try:
-            async for msg in channel.history(limit=None, oldest_first=True, after=after):
-                exists = (
-                    session.query(models.DiscordMessage.id).filter_by(id=msg.id).first()
-                )
-                if exists:
-                    continue
-
-                attachments = [
-                    {"filename": a.filename, "url": a.url, "size": a.size}
-                    for a in msg.attachments
-                ]
-
-                record = models.DiscordMessage(
-                    id=msg.id,
-                    guild_id=channel.guild.id,
-                    channel_id=channel.id,
-                    user_id=msg.author.id,
-                    user_name=msg.author.name,
-                    user_display_name=msg.author.display_name,
-                    content=msg.content if msg.content else None,
-                    reply_to=msg.reference.message_id if msg.reference else None,
-                    attachments=attachments if attachments else None,
-                    attachments_explanation=None,
-                    message_create_at=msg.created_at,
-                )
-                session.add(record)
-                count += 1
-                latest_timestamp = msg.created_at
-
-                if count % 500 == 0:
-                    session.commit()
-                    logger.debug(f"'{channel.name}': {count} mensajes guardados...")
-
-            session.commit()
-            logger.info(f"'{channel.name}': {count} mensajes nuevos guardados.")
-
-            if latest_timestamp:
-                channel_record.last_messages_at = latest_timestamp
-                session.commit()
-                logger.debug(f"'{channel.name}': last_messages_at actualizado a {latest_timestamp}")
-
-        except discord.Forbidden:
-            logger.warning(f"Sin permisos en '{channel.name}' ({channel.id}), saltando.")
-            session.rollback()
-        except Exception as e:
-            logger.error(f"Error en '{channel.name}' ({channel.id}): {e}")
-            session.rollback()
 
 
 if __name__ == "__main__":
@@ -336,10 +217,11 @@ if __name__ == "__main__":
         channel_id_list=CHANNEL_ID_LIST,
     )
     bot.run(settings.DISCORD_BOT_TOKEN)
+    # bot.run(settings.DULCINEA_DISCORD_BOT_TOKEN)
 
 
 """
-python3 -m src.services.DiscordEchoSaver_v1.echosaverbot_v2
+python3 -m src.services.v2.DiscordEchoSaver.findAyura
 
 
 """

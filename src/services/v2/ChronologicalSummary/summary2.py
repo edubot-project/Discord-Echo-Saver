@@ -6,10 +6,10 @@ from datetime import datetime
 from langchain_core.language_models.chat_models import BaseChatModel
 from .prompts import SUMMARY_DISCORD_MESSAGES_1
 
-
 import re
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import List, TypedDict, Dict, Any, Optional
 
 from src.logging_config import get_logger
 logger = get_logger(module_name="summaery", DIR="ChronologicalSummary_v1")
@@ -84,16 +84,21 @@ def get_messages(session: Session, channel_id: int, summary_from: datetime, summ
 
 
 
+class ProccesSingleChunk(TypedDict):
+    summary : str
+    usage_metadata : Dict[str, Any]
+    idx : int
 
 
 
-async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, semaphore : asyncio.Semaphore):
+
+async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, semaphore : asyncio.Semaphore) -> ProccesSingleChunk:
     print("\n")
     print("****** precess_single_chunk")
     async with semaphore:
         try:
             ai_message = await llm.ainvoke(prompt)
-            print(f"usage_metadata: {ai_message.usage_metadata} \n\n")
+            print(f"usage_metadata: {ai_message.usage_metadata}, \n\n numero de caracteres: {len(ai_message.content)} \n\n\n")
             return {"summary": ai_message.content, "usage_metadata":ai_message.usage_metadata, "idx":idx}
         except Exception as e:
             logger.info(f"error procesando en el registro {idx} de DiscordChannelChronologicalSummary: \n {e} \n\n")
@@ -103,8 +108,7 @@ async def process_single_chunk(llm : BaseChatModel, prompt : str, idx : int, sem
 
 
 
-
-async def collect_all_pending_summaries(session: Session, channel_id: int):
+def collect_all_pending_summaries(session: Session) -> List[str]:
     """
     Recorre la jerarquía y devuelve una lista plana de todos los prompts pendientes.
     Esto evita procesar canal por canal y permite paralelismo real.
@@ -113,79 +117,79 @@ async def collect_all_pending_summaries(session: Session, channel_id: int):
 
     # 1. Obtener registros pendientes del canal actual
     summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(
-        models.DiscordChannelChronologicalSummary.channel_id == channel_id,
         models.DiscordChannelChronologicalSummary.summary.is_(None),
+        models.DiscordChannelChronologicalSummary.status.is_(None),
     ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
 
+    if summary_records is None:
+        print("summary_records es vacio")
+        return None
+    
+    print(f"Hay {len(summary_records)} registros en DiscordChannelChronologicalSummary que su status es None")
+
     for obj in summary_records:
-        messages = get_messages(session, channel_id=channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
+        messages = get_messages(session, channel_id=obj.channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
         if messages:
             prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
             all_tasks.append({"prompt": prompt, "idx": obj.id})
-    
-    # 2. Buscar canales hijos (recursividad para recolectar, no para procesar)
-    child_channels = session.query(models.DiscordChannel).filter(
-        models.DiscordChannel.parent_channel_id == channel_id
-    ).all()
-
-    for child in child_channels:
-        # Llamada recursiva para seguir recolectando
-        child_tasks = await collect_all_pending_summaries(session, child.id)
-        all_tasks.extend(child_tasks)
-
+        
     return all_tasks
 
 
 
 
 
-async def process_parallel_system(session: Session, semaphore: asyncio.Semaphore, llm_endpoints: list, root_idx: int):
-    print(f"--- 🔍 Recolectando tareas desde el ID {root_idx}...")
-    pending_tasks_data = await collect_all_pending_summaries(session, root_idx)
+
+
+async def make_all_pending_summaries(session : Session, semaphore : asyncio.Semaphore, llm : BaseChatModel):
+    prompts = collect_all_pending_summaries(session=session)
+
+    if prompts is None:
+        print("prompts es vacio")
+        return None
     
-    if not pending_tasks_data:
-        print("--- ✅ Nada pendiente.")
-        return
-
-    total_tasks = len(pending_tasks_data)
-    print(f"--- 🚀 Distribuyendo {total_tasks} tareas entre {len(llm_endpoints)} GPUs...")
-
-    # Creamos las corrutinas pero NO las lanzamos con gather
+    print("Prompts conseguidos")
+    
     tasks = [
         process_single_chunk(
-            llm=llm_endpoints[i % len(llm_endpoints)], 
-            prompt=t["prompt"], 
-            idx=t["idx"], 
-            semaphore=semaphore
-        )
-        for i, t in enumerate(pending_tasks_data)
+            llm=llm,
+            prompt=p["prompt"],
+            idx=p["idx"],
+            semaphore=semaphore,
+        ) for p in prompts
     ]
+    print("tasks conseguidos")
+
+    # result : List[ProccesSingleChunk] = await asyncio.gather(*tasks)
+    # total_tasks = len(result)
+    total_tasks = len(tasks)
 
     count = 0
     input_tokens, output_tokens = 0, 0
 
-    # Usamos as_completed para obtener resultados conforme vayan terminando
     for task in asyncio.as_completed(tasks):
         result = await task
-        
+
         if result and result["summary"]:
-            # Guardado inmediato de este registro
             db_record = session.query(models.DiscordChannelChronologicalSummary).filter_by(id=result["idx"]).first()
+
             if db_record:
                 db_record.summary = result["summary"]
+                db_record.status = "ready"
                 
-                # Acumular tokens para el log final
+                print(f"guardando summary con id {db_record.id} ")
+
                 meta = result.get("usage_metadata")
                 if meta:
                     input_tokens += meta.get("input_tokens", 0)
                     output_tokens += meta.get("output_tokens", 0)
-
-                # Commit cada 1 o cada pocos registros para no saturar la DB pero estar seguros
-                session.add(db_record)
-                session.commit() # <--- GUARDADO REAL AQUÍ
                 
+                session.add(db_record)
+                session.commit() 
+
                 count += 1
                 print(f"--- [Progreso: {count}/{total_tasks}] Registro {result['idx']} guardado correctamente.")
+
 
     print(f"\n--- ✨ ¡PROCESO FINALIZADO!")
     print(f"--- 📊 Resúmenes guardados: {count}")
@@ -194,42 +198,6 @@ async def process_parallel_system(session: Session, semaphore: asyncio.Semaphore
 
 
 
-# --- En tu bloque __main__ ---
-if __name__=="__main__":
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from src import settings
-    from src import models
-    from datetime import datetime
-    import asyncio 
-
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    from langchain_ollama import ChatOllama
-
-    engine = create_engine(settings.APP_CONN_STRING)
-    MySession = sessionmaker(bind=engine)
-    session = MySession()
-
-    # Configuramos los dos clientes apuntando a los dos servicios
-    # model_name = "qwen3:30b"
-    model_name = "gemma3:27b"
-    llm_gpu0 = ChatOllama(model=model_name, temperature=0.3, base_url="http://10.8.0.11:11434")
-    llm_gpu1 = ChatOllama(model=model_name, temperature=0.3, base_url="http://10.8.0.11:11435")
-    
-    endpoints = [llm_gpu0, llm_gpu1]
-
-    # Semáforo: Como cada servicio tiene NUM_PARALLEL=2, 
-    # el total para el sistema es 4.
-    semaphore = asyncio.Semaphore(4) 
-
-    asyncio.run(
-        process_parallel_system(session=session, semaphore=semaphore, llm_endpoints=endpoints, root_idx=1309953285582491649)
-    )
 
 
 
-"""
-python3 -m src.services.ChronologicalSummary_v1.summary_ollama2
-
-
-"""

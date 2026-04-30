@@ -9,6 +9,7 @@ from sqlalchemy import (
     func,
     JSON,
     Boolean,
+    Enum,
     ForeignKey,
     ForeignKeyConstraint
 )
@@ -98,13 +99,80 @@ class DiscordChannelChronologicalSummary(Base):
     summary_embedding = Column(Vector[3072])
     #rag_summary = Column(Text)
     key_words = Column(JSON, nullable=True)
+    status = Column(Enum('in_lightrag', 'ready', name='summary_status'), nullable=True)
 
 
 
 
 
-# class DiscordChannelSummary(Base):
-#     __tablename__ = "discord_channel_summaries"
+
+# ALTER TABLE lightrag_docs ADD COLUMN pending_deletion BOOLEAN NOT NULL DEFAULT FALSE; 
+# class LightRagDocs(Base):
+#     __tablename__="lightrag_docs"
+
+#     lightrag_doc_id = Column(String(255), nullable=False, index=True, primary_key=True)
+#     summary_id = Column(Integer, ForeignKey("channel_chronological_summary.id"), nullable=False,)
+#     pending_deletion = Column(Boolean, default=False, nullable=False) 
+#     lightrag_track_id = Column(String(255), nullable=True, index=True)
+
+# ALTER TABLE lightrag_docs ADD COLUMN lightrag_track_id VARCHAR(255);
+
+
+# CREATE TABLE lightrag_docs ( 
+#       lightrag_doc_id VARCHAR(255) NOT NULL,                            
+#       summary_id INTEGER NOT NULL,                                                                                                                                                      
+#       PRIMARY KEY (lightrag_doc_id),                                                                                                                                                    
+#       FOREIGN KEY (summary_id) REFERENCES channel_chronological_summary(id)                                                                                                             
+#   );                                                                                                                                                                                    
+                                                                                                                                                                                        
+#   CREATE INDEX ix_lightrag_docs_lightrag_doc_id ON lightrag_docs (lightrag_doc_id);  
+
+
+
+"""
+Migracion:
+
+ALTER TABLE lightrag_docs ADD COLUMN pending_deletion BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE lightrag_docs ADD COLUMN lightrag_track_id VARCHAR(255);
+
+ALTER TABLE lightrag_docs
+DROP CONSTRAINT lightrag_docs_pkey;
+
+ALTER TABLE lightrag_docs
+ADD PRIMARY KEY (summary_id);
+
+
+ALTER TABLE lightrag_docs
+ALTER COLUMN lightrag_doc_id DROP NOT NULL;
+
+ALTER TABLE lightrag_docs
+ADD CONSTRAINT unique_lightrag_doc_id UNIQUE (lightrag_doc_id);
+
+
+"""
+
+
+class LightRagDocs(Base):
+    __tablename__ = "lightrag_docs"
+
+    summary_id = Column(
+        Integer,
+        ForeignKey("channel_chronological_summary.id"),
+        primary_key=True
+    )
+    lightrag_doc_id = Column(String(255), nullable=True, unique=True, index=True)
+    pending_deletion = Column(Boolean, default=False, nullable=False)
+    lightrag_track_id = Column(String(255), nullable=True, index=True)
+
+
+
+
+
+
+
+# class DiscordChannelContext(Base):
+#     __tablename__ = "discord_channel_context"
 
 #     id = Column(Integer, primary_key=True, autoincrement=True)
 #     channel_id = Column(BigInteger, ForeignKey("discord_channels.id"))

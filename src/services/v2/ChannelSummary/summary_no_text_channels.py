@@ -1,4 +1,4 @@
-from src import models
+from src import discord_models as models
 from .prompt import SUMMARY_FORUM_OR_CATEGORY_CHANNEL_PROMPT_3
 
 from langchain_core.language_models.chat_models import BaseChatModel

@@ -135,108 +135,34 @@ def chunking_messages_by_channel(engine: Engine, session: Session, channel_id: i
 
 
 
-
-
-
-
 def save_chunked_messages_by_channel(session : Session, channel_id : int, summary_list : List[SummaryDict] , min_msg : int = 50):
     print(f"[save] Guardando chunks del canal {channel_id} ({len(summary_list)} chunks nuevos)")
-    summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(
-        models.DiscordChannelChronologicalSummary.channel_id == channel_id
-    ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
 
-    print(f"[save] Registros existentes en DB: {len(summary_records)}")
+    # summary_records = session.query(models.DiscordChannelChronologicalSummary).filter(
+    #     models.DiscordChannelChronologicalSummary.channel_id == channel_id
+    # ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
+    # print(f"[save] Registros existentes en DB: {len(summary_records)}")
 
-    # Caso 1
-    if (summary_records is None):
-        print("[save] Caso 1: sin registros previos → insertando todos los chunks")
-        for summ_dict in summary_list:
-            record = models.DiscordChannelChronologicalSummary(
-                channel_id=channel_id,
-                start_time=summ_dict.get("summary_from"),
-                end_time=summ_dict.get("summary_end"),
-                number_messages=summ_dict.get("messages_count"),
-                summary=None,
-                key_words=None,
-                #status=None,
-            )
-            session.add(record)
-             
-        session.commit()
-        print(f"[save] ✓ {len(summary_list)} chunks insertados")
-        return
-
-    last_summary_record = summary_records[-1]
-    first_summary_record = summary_records[0]
-
-    last_summary_list = summary_list[-1]
-    first_summary_list = summary_list[0]
-
-
-
-    # Caso 2
-    if (last_summary_record.number_messages >= min_msg) and (last_summary_list.get("messages_count") >= min_msg):
-        print(f"[save] Caso 2: último registro DB tiene {last_summary_record.number_messages} msgs (≥{min_msg}) y primer chunk nuevo tiene {last_summary_list.get('messages_count')} msgs → insertando todos")
-        for summ_dict in summary_list:
-            record = models.DiscordChannelChronologicalSummary(
-                channel_id=channel_id,
-                start_time=summ_dict.get("summary_from"),
-                end_time=summ_dict.get("summary_end"),
-                number_messages=summ_dict.get("messages_count"),
-                summary=None,
-                key_words=None,
-                #status=None,
-            )
-            session.add(record)
-            
-        session.commit()
-        print(f"[save] ✓ {len(summary_list)} chunks insertados")
-        return
-
-
-    # Caso 3
-    if (len(summary_list) == 1):
-        print(f"[save] Caso 3: solo 1 chunk nuevo → fusionando con último registro DB (antes: {last_summary_record.number_messages} msgs, después: {first_summary_list.get('messages_count') + last_summary_record.number_messages} msgs)")
-        last_summary_record.end_time = first_summary_list.get("summary_end")
-        last_summary_record.number_messages = first_summary_list.get("messages_count") + last_summary_record.number_messages
-        last_summary_record.summary = None
-        #last_summary_record.status = None
-        session.add(last_summary_record)
-        session.commit()
-        print(f"[save] ✓ Registro actualizado")
-        return
-
-
-    # Caso 4
-    if (summary_list > 1) and (len(summary_records) == 1) and (first_summary_record.number_messages < min_msg):
-        print(f"[save] Caso 4: registro DB único con {first_summary_record.number_messages} msgs (<{min_msg}) → fusionando con primer chunk nuevo y añadiendo el resto")
-        first_summary_record.end_time = first_summary_list.get("summary_end")
-        first_summary_record.number_messages = first_summary_list.get("messages_count") + first_summary_record.number_messages
-        first_summary_record.summary = None
-        #first_summary_record.status = None
-        session.add(first_summary_record)
-        for i in range(1, len(summary_list)):
-            summ_dict = summary_list[i]
-            record = models.DiscordChannelChronologicalSummary(
-                channel_id=channel_id,
-                start_time=summ_dict.get("summary_from"),
-                end_time=summ_dict.get("summary_end"),
-                number_messages=summ_dict.get("messages_count"),
-                summary=None,
-                key_words=None
-            )
-            session.add(record)
-            
-        session.commit()
-        print(f"[save] ✓ Registro fusionado + {len(summary_list) - 1} chunks nuevos insertados")
-        return
-
-    raise ValueError("Caso Desconocido")
 
     
-    
+    if (len(summary_list) == 0) and (summary_list[0].get("messages_count") < min_msg):
+        print(f"Solo hay un chunk de mensajes y no tiene la suficiente cantidad de mensajes: {summary_list[0].get('messages_count')} ignorando")
+        return
+    else:
+        print("Guardando los chunks en el modelo DiscordChannelChronologicalSummary")
+        for summ in summary_list:
+            record = models.DiscordChannelChronologicalSummary(
+                start_time=summ.get("summary_from"),
+                end_time=summ.get("summary_end"),
+                number_messages=summ.get("messages_count")
+            )
+            session.add(record)
+        session.commit()
+        print("Datos guardados con exito")
+        
 
 
+     
 def chunking_recursively_by_channel_id(engine: Engine, session: Session, channel_id: int, min_msg: int = 50):
     print(f"\n[recurse] ── Procesando canal {channel_id} ──")
     summary_list = chunking_messages_by_channel(engine=engine, session=session, channel_id=channel_id, min_msg=min_msg)
@@ -256,6 +182,7 @@ def chunking_recursively_by_channel_id(engine: Engine, session: Session, channel
     
 
 
+
 if __name__ == "__main__":
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -266,25 +193,19 @@ if __name__ == "__main__":
     session = MySession()
 
 
-    # summary_list = chunking_messages_by_channel(engine=engine, session=session, channel_id=1399093133056278549)
-    # for s in summary_list:
-    #     print(s)
-    # print("\n\n")
+    summary_list = chunking_messages_by_channel(engine=engine, session=session, channel_id=1309954089823764502)
+    print("\n\n")
+    for s in summary_list:
+        print(s)
+    print("\n\n")
 
-    # save_chunked_messages_by_channel(session=session, channel_id=1399093133056278549, summary_list=summary_list)
-
-
-    #root_id = 1309953285582491649
-    root_id = 1311706520467144808
-    chunking_recursively_by_channel_id(engine=engine, session=session, channel_id=root_id)
-
-
+    save_chunked_messages_by_channel(session=session, channel_id=1309954089823764502, summary_list=summary_list)
+    print("\n\n")
 
 
 
 """
-python3 -m src.services.v2.ChronologicalSummary.chunking_messages
-
+python3 -m src.services.v2.ChronologicalSummary.greedy_chunking_messages
 
 
 
@@ -293,12 +214,11 @@ python3 -m src.services.v2.ChronologicalSummary.chunking_messages
 
 1403781039268298903 -> ??????
 
+
 1309954089823764502 -> ?????
 
-1409651324831928321 -> 25
-
-
-1399093133056278549 -> 56
-
-
 """
+
+
+
+

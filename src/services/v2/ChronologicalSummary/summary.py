@@ -1,6 +1,8 @@
+# Nota las funciones de este script estan pensadas para hacer un proceso recursivo de resumene desde un nodo raiz
+
 import asyncio
 from sqlalchemy.orm import Session
-from src import models
+from src import discord_models as models
 from datetime import datetime
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -8,7 +10,6 @@ from .prompts import SUMMARY_DISCORD_MESSAGES_1
 
 import re
 from sqlalchemy.orm import Session
-from src import models
 from datetime import datetime
 
 from src.logging_config import get_logger
@@ -117,7 +118,8 @@ async def collect_all_pending_summaries(session: Session, channel_id: int):
     ).order_by(models.DiscordChannelChronologicalSummary.start_time).all()
 
     for obj in summary_records:
-        messages = get_messages(session, channel_id=channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
+        # AQUI NO ES obj.channel_id ??????
+        messages = get_messages(session, channel_id=obj.channel_id, summary_from=obj.start_time, summary_end=obj.end_time)
         if messages:
             prompt = SUMMARY_DISCORD_MESSAGES_1.format(messages=messages)
             all_tasks.append({"prompt": prompt, "idx": obj.id})
